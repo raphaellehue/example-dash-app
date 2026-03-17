@@ -1,288 +1,248 @@
+import dash
+from dash import html, dcc, dash_table, Input, Output
+import dash_bootstrap_components as dbc
 import pandas as pd
 import plotly.express as px
-from dash import Dash, dcc, html, Input, Output, dash_table, callback
-import dash_bootstrap_components as dbc
+import plotly.graph_objects as go
 
-# Initialize the app
-app = Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
-server = app.server
+# importation de la base 
+df = pd.read_csv("datasets/data.csv")
 
+# nettoyage des colonnes 
+numeric_cols = ["Quantity", "Avg_Price", "Discount_pct", "Offline_Spend", "Online_Spend", "Delivery_Charges", "GST"]
+for col in numeric_cols:
+    df[col] = pd.to_numeric(df[col], errors="coerce")
 
-# Load data
-# Assuming you have a CSV file with the data
-df = pd.read_csv('transactions.csv')
+# harmonisation de la date
+df["Transaction_Date"] = pd.to_datetime(df["Transaction_Date"], errors="coerce")
+df["Date"] = df["Transaction_Date"]
 
-# Data preprocessing
-df['Transaction_Date'] = pd.to_datetime(df['Transaction_Date'])
-df['Location'] = df['Location'].apply(lambda x: str(x).title()).astype('category')
-df['Date'] = pd.to_datetime(df['Date'])
-df['Total_Spend'] = df['Offline_Spend'] + df['Online_Spend']
-df['Revenue'] = df['Quantity'] * df['Avg_Price']
+# supprimer les dates manquantes
+df = df.dropna(subset=["Date"])
 
-# Calculate metrics
-total_revenue = df['Revenue'].sum()
-avg_order_value = df.groupby('Transaction_ID')['Revenue'].sum().mean()
-total_customers = df['CustomerID'].nunique()
-top_categories = df.groupby('Product_Category')['Revenue'].sum().sort_values(ascending=False).head(5)
+# CA avec remise
+df["Sales"] = df["Quantity"] * df["Avg_Price"] * (1 - df["Discount_pct"] / 100)
 
-# App layout
+# Mois
+df["Month"] = df["Date"].dt.to_period("M")
+
+app = dash.Dash(__name__, external_stylesheets=[dbc.themes.COSMO])
+
 app.layout = dbc.Container([
+
+    # titre avec fond rose et le filtre de zone
+dbc.Row([
+    dbc.Col(
+        html.Div([
+            dbc.Row([
+                dbc.Col(
+                    html.H2("ECAP Store — Tableau de bord",
+                            style={"margin": "0", "padding": "10px 0"}),
+                    md=8
+                ),
+                dbc.Col(
+                    dcc.Dropdown(
+                        id="zone-filter",
+                        options=[{"label": loc, "value": loc}
+                                 for loc in sorted(df["Location"].dropna().astype(str).unique())],
+                        value=None,
+                        placeholder="Choisir une zone",
+                        clearable=True,
+                        style={"height": "45px", "fontSize": "16px"}
+                    ),
+                    md=4
+                )
+            ])
+        ],
+        style={
+            "backgroundColor": "#F8D7E3",
+            "height": "60px",
+            "borderRadius": "8px",
+            "marginTop": "10px",
+            "marginBottom": "10px",
+            "padding": "10px"
+        }),
+        md=12
+    )
+]),
+
     dbc.Row([
-        dbc.Col(html.H1("Customer Transaction Dashboard", className="text-center my-2"), width=12)
-    ]),
-    
-    # KPI Cards
-    dbc.Row([
-        dbc.Col(dbc.Card([
-            dbc.CardBody([
-                html.H4("Total Revenue", className="card-title"),
-                html.H2(f"${total_revenue:,.2f}", className="card-text")
-            ])
-        ], color="primary", outline=True), width=3),
-        dbc.Col(dbc.Card([
-            dbc.CardBody([
-                html.H4("Avg Order Value", className="card-title"),
-                html.H2(f"${avg_order_value:,.2f}", className="card-text")
-            ])
-        ], color="success", outline=True), width=3),
-        dbc.Col(dbc.Card([
-            dbc.CardBody([
-                html.H4("Total Customers", className="card-title"),
-                html.H2(f"{total_customers:,}", className="card-text")
-            ])
-        ], color="info", outline=True), width=3),
-        dbc.Col(dbc.Card([
-            dbc.CardBody([
-                html.H4("Online/Offline Ratio", className="card-title"),
-                html.H2(f"{df['Online_Spend'].sum() / df['Offline_Spend'].sum():.2f}", className="card-text")
-            ])
-        ], color="warning", outline=True), width=3),
-    ], className="mb-4"),
-    
-    # Filters
-    dbc.Row([ 
         dbc.Col([
-            html.Label("Product Category:", className="mt-3"),
-            dcc.Dropdown(
-                id='category-filter',
-                options=[{'label': cat, 'value': cat} for cat in sorted(df['Product_Category'].unique())],
-                multi=True
-            ),
-        ], width=6),
-        dbc.Col([  
-            html.Label("Location:", className="mt-3"),
-            dcc.Dropdown(
-                id='location-filter',
-                options=[{'label': loc, 'value': loc} for loc in sorted(df['Location'].unique())],
-                multi=True
-            ),
-        ], width=6),
-    ], className="mb-4"),
-    
-    # Tabs for different visualizations
-    dbc.Tabs([
-        # Sales Trends Tab
-        dbc.Tab(label="Sales Trends", children=[
+
+            # KPI
             dbc.Row([
-                dbc.Col([
-                    dbc.Card([
+                dbc.Col(
+                    dbc.Card(
                         dbc.CardBody([
-                            html.H5("Monthly Sales Trend"),
-                            dcc.Graph(id='sales-trend')
+                            dcc.Graph(id="kpi-ca", config={"displayModeBar": False})
                         ])
-                    ])
-                ], width=12)
-            ], className="mt-4"),
-        ]),
-        
-        # Product Analysis Tab
-        dbc.Tab(label="Product Analysis", children=[
+                    ),
+                    md=6
+                ),
+                dbc.Col(
+                    dbc.Card(
+                        dbc.CardBody([
+                            dcc.Graph(id="kpi-units", config={"displayModeBar": False})
+                        ])
+                    ),
+                    md=6
+                ),
+            ], className="mb-3"),
+
+            # Bar chart
             dbc.Row([
-                dbc.Col([
-                    dbc.Card([
+                dbc.Col(
+                    dbc.Card(
                         dbc.CardBody([
-                            html.H5("Revenue by Product Category"),
-                            dcc.Graph(id='category-revenue')
+                            dcc.Graph(id="bar-chart", style={"height": "350px"})
                         ])
-                    ])
-                ], width=6),
-                dbc.Col([
-                    dbc.Card([
-                        dbc.CardBody([
-                            html.H5("Top Products by Quantity Sold"),
-                            dcc.Graph(id='top-products')
-                        ])
-                    ])
-                ], width=6)
-            ], className="mt-4")
-        ]),
-        
-        # Customer Analysis Tab
-        dbc.Tab(label="Customer Analysis", children=[
+                    ),
+                    md=12
+                )
+            ])
+
+        ], md=5),
+
+        # colonne à droite
+        dbc.Col([
+
+            # Line chart
             dbc.Row([
-                dbc.Col([
-                    dbc.Card([
+                dbc.Col(
+                    dbc.Card(
                         dbc.CardBody([
-                            html.H5("Customer Spending by Gender"),
-                            dcc.Graph(id='gender-spending')
+                            dcc.Graph(id="line-chart", style={"height": "380px"})
                         ])
-                    ])
-                ], width=6),
-                dbc.Col([
-                    dbc.Card([
-                        dbc.CardBody([
-                            html.H5("Spending by Tenure"),
-                            dcc.Graph(id='tenure-spending')
-                        ])
-                    ])
-                ], width=6)
-            ], className="mt-4"),
+                    ),
+                    md=12
+                )
+            ], className="mb-3"),
+
+            # Tableau
             dbc.Row([
-                dbc.Col([
-                    dbc.Card([
+                dbc.Col(
+                    dbc.Card(
                         dbc.CardBody([
-                            html.H5("Regional Spending Distribution"),
-                            dcc.Graph(id='location-spending')
-                        ])
-                    ])
-                ], width=12)
-            ], className="mt-4")
-        ]),
-        
-        # Coupon Analysis
-        dbc.Tab(label="Coupon Analysis", children=[
-            dbc.Row([
-                dbc.Col([
-                    dbc.Card([
-                        dbc.CardBody([
-                            html.H5("Coupon Effectiveness"),
-                            dcc.Graph(id='coupon-effectiveness')
-                        ])
-                    ])
-                ], width=6),
-                dbc.Col([
-                    dbc.Card([
-                        dbc.CardBody([
-                            html.H5("Discount Impact on Order Value"),
-                            dcc.Graph(id='discount-impact')
-                        ])
-                    ])
-                ], width=6)
-            ], className="mt-4")
-        ]),
-        
-        # Transaction Details Tab
-        dbc.Tab(label="Transaction Details", children=[
-            dbc.Row([
-                dbc.Col([
-                    dbc.Card([
-                        dbc.CardBody([
-                            html.H5("Transaction Data"),
+                            html.H5("Table des 100 dernières ventes"),
                             dash_table.DataTable(
-                                id='transaction-table',
-                                columns=[{"name": i, "id": i} for i in df.columns],
-                                data=df.head(100).to_dict('records'),
-                                page_size=15,
-                                style_table={'overflowX': 'auto'},
-                                style_cell={
-                                    'minWidth': '100px',
-                                    'textAlign': 'left'
+                                id="sales-table",
+                                page_size=10,
+                                style_table={
+                                    "maxHeight": "250px",
+                                    "overflowY": "scroll",
+                                    "overflowX": "auto"
                                 },
-                                filter_action="native",
-                                sort_action="native"
+                                style_cell={"padding": "5px", "fontSize": "13px"},
+                                style_header={"fontWeight": "bold", "backgroundColor": "#f0f0f0"}
                             )
                         ])
-                    ])
-                ], width=12)
-            ], className="mt-4")
-        ])
+                    ),
+                    md=12
+                )
+            ])
+
+        ], md=7)
+
     ])
+
 ], fluid=True)
 
-# Callbacks for interactive elements
-@callback(
-    [Output('sales-trend', 'figure'),
-     Output('category-revenue', 'figure'),
-     Output('top-products', 'figure'),
-     Output('gender-spending', 'figure'),
-     Output('tenure-spending', 'figure'),
-     Output('location-spending', 'figure'),
-     Output('coupon-effectiveness', 'figure'),
-     Output('discount-impact', 'figure'),
-     Output('transaction-table', 'data')],
-    [Input('category-filter', 'value'),
-     Input('location-filter', 'value')]
+
+# les callback
+@app.callback(
+    Output("kpi-ca", "figure"),
+    Output("kpi-units", "figure"),
+    Output("bar-chart", "figure"),
+    Output("line-chart", "figure"),
+    Output("sales-table", "data"),
+    Input("zone-filter", "value")
 )
-def update_graphs(categories, locations):
-    # Filter data based on inputs
-    filtered_df = df.copy()
+def update_dashboard(selected_zone):
 
-    if categories:
-        filtered_df = filtered_df[filtered_df['Product_Category'].isin(categories)]
-    
-    if locations:
-        filtered_df = filtered_df[filtered_df['Location'].isin(locations)]
-    
-    # Monthly sales trend
-    monthly_sales = filtered_df.groupby(pd.Grouper(key='Transaction_Date', freq='M'))['Revenue'].sum().reset_index()
-    sales_trend_fig = px.line(monthly_sales, x='Transaction_Date', y='Revenue',
-                         title='Monthly Sales Trend',
-                         labels={'Revenue': 'Revenue ($)', 'Transaction_Date': 'Date'})
-    
-    # Category revenue
-    category_revenue = filtered_df.groupby('Product_Category')['Revenue'].sum().reset_index().sort_values('Revenue', ascending=False)
-    category_fig = px.bar(category_revenue, x='Product_Category', y='Revenue',
-                         title='Revenue by Product Category',
-                         labels={'Revenue': 'Revenue ($)', 'Product_Category': 'Category'})
-    
-    # Top products
-    top_products = filtered_df.groupby('Product_Description')['Quantity'].sum().reset_index().sort_values('Quantity', ascending=False).head(10)
-    products_fig = px.bar(top_products, x='Product_Description', y='Quantity',
-                        title='Top 10 Products by Quantity Sold',
-                        labels={'Quantity': 'Units Sold', 'Product_Description': 'Product'})
-    products_fig.update_layout(xaxis={'categoryorder':'total descending'})
-    
-    # Gender spending
-    gender_spending = filtered_df.groupby('Gender')[['Online_Spend', 'Offline_Spend']].sum().reset_index()
-    gender_fig = px.bar(gender_spending, x='Gender', y=['Online_Spend', 'Offline_Spend'],
-                      title='Spending by Gender',
-                      labels={'value': 'Spend ($)', 'variable': 'Channel'})
-    
-    # Tenure spending
-    tenure_bins = [0, 6, 12, 24, 36, float('inf')]
-    tenure_labels = ['0-6', '7-12', '13-24', '25-36', '36+']
-    filtered_df['Tenure_Group'] = pd.cut(filtered_df['Tenure_Months'], bins=tenure_bins, labels=tenure_labels)
-    tenure_spending = filtered_df.groupby('Tenure_Group')['Total_Spend'].mean().reset_index()
-    tenure_fig = px.bar(tenure_spending, x='Tenure_Group', y='Total_Spend',
-                      title='Average Spending by Customer Tenure (Months)',
-                      labels={'Total_Spend': 'Avg. Spend ($)', 'Tenure_Group': 'Tenure (Months)'})
-    
-    # Location spending
-    location_spending = filtered_df.groupby('Location')['Total_Spend'].sum().reset_index().sort_values('Total_Spend', ascending=False)
-    location_fig = px.bar(location_spending, x='Location', y='Total_Spend',
-                         title='Total Spending by Location',
-                         labels={'Total_Spend': 'Total Spend ($)', 'Location': 'Location'})
-    
-    # Coupon effectiveness
-    coupon_effect = filtered_df.groupby('Coupon_Status')['Revenue'].mean().reset_index()
-    coupon_fig = px.bar(coupon_effect, x='Coupon_Status', y='Revenue',
-                       title='Average Order Value by Coupon Status',
-                       labels={'Revenue': 'Avg. Order Value ($)', 'Coupon_Status': 'Coupon Status'})
-    
-    # Discount impact
-    filtered_df['Discount_Group'] = pd.cut(filtered_df['Discount_pct'], 
-                                          bins=[0, 5, 10, 15, 20, 100],
-                                          labels=['0-5%', '5-10%', '10-15%', '15-20%', '20%+'])
-    discount_impact = filtered_df.groupby('Discount_Group')['Revenue'].mean().reset_index()
-    discount_fig = px.line(discount_impact, x='Discount_Group', y='Revenue',
-                          title='Average Order Value by Discount Percentage',
-                          labels={'Revenue': 'Avg. Order Value ($)', 'Discount_Group': 'Discount Range'})
-    
-    # Transaction table
-    table_data = filtered_df.head(100).to_dict('records')
-    
-    return (sales_trend_fig, category_fig, products_fig, gender_fig, tenure_fig, 
-            location_fig, coupon_fig, discount_fig, table_data)
+    # filtre pour les zones
+    dff = df.copy()
+    if selected_zone:
+        dff = dff[dff["Location"] == selected_zone]
 
-if __name__ == '__main__':
-    app.run_server(debug=True)
+    # KPI
+    dec = dff[dff["Month"] == "2019-12"]
+    nov = dff[dff["Month"] == "2019-11"]
+
+    dec_sales = dec["Sales"].sum()
+    nov_sales = nov["Sales"].sum()
+
+    dec_units = dec["Quantity"].sum()
+    nov_units = nov["Quantity"].sum()
+
+    # KPI CA
+    fig_ca = go.Figure()
+    fig_ca.add_trace(go.Indicator(
+        mode="number+delta",
+        value=dec_sales,
+        number={"valueformat": ",.0f", "font": {"size": 26}},
+        title={"text": "Chiffre d'affaires (Décembre)", "font": {"size": 12}},
+        delta={"reference": nov_sales, "relative": False, "font": {"size": 12}},
+    ))
+    fig_ca.update_layout(height=90, margin=dict(l=10, r=10, t=20, b=0))
+
+    # KPI unités vendues
+    fig_units = go.Figure()
+    fig_units.add_trace(go.Indicator(
+        mode="number+delta",
+        value=dec_units,
+        number={"valueformat": ",.0f", "font": {"size": 26}},
+        title={"text": "Unités vendues (Décembre)", "font": {"size": 12}},
+        delta={"reference": nov_units, "relative": False, "font": {"size": 12}},
+    ))
+    fig_units.update_layout(height=90, margin=dict(l=10, r=10, t=20, b=0))
+
+    # top 10 catégories triées décroissant par nombre de ventes
+
+    cat_sex = dff.groupby(["Product_Category", "Gender"])["Sales"].sum().reset_index()
+    top10 = cat_sex.groupby("Product_Category")["Sales"].sum().nlargest(10).index
+    filtered = cat_sex[cat_sex["Product_Category"].isin(top10)]
+
+    bar_chart = px.bar(
+        filtered.sort_values("Sales", ascending=False),
+        x="Sales",
+        y="Product_Category",
+        color="Gender",
+        barmode="group",
+        orientation="h",
+        title="Top 10 des meilleures ventes",
+        color_discrete_map={"F": "deeppink", "M": "steelblue"},
+        template="plotly_white"
+    )
+    # améliorer la lisibilité
+    bar_chart.update_layout(
+        margin=dict(l=80, r=20, t=40, b=20),
+        yaxis={'categoryorder': 'total ascending'}
+    )   
+
+    # pour pas que les dates encombrent le graphique 
+    dff["Week"] = dff["Date"].dt.to_period("W").apply(lambda r: r.start_time)
+    weekly = dff.groupby("Week")["Sales"].sum().reset_index()
+
+    line_chart = px.line(
+        weekly,
+        x="Week",
+        y="Sales",
+        title="Évolution du chiffre d'affaires par semaine",
+        template="plotly_white"
+    )
+
+    line_chart.update_layout(height=380)
+    line_chart.update_xaxes(tickformat="%d %b %Y", nticks=10, tickangle=0)
+    line_chart.update_yaxes(range=[0, weekly["Sales"].max() * 1.15])
+
+    # tableau de données
+    table_data = dff.sort_values("Date", ascending=False).head(100)[[
+        "Date", "Gender", "Location", "Product_Category",
+        "Quantity", "Avg_Price", "Discount_pct"
+    ]].to_dict("records")
+
+    return fig_ca, fig_units, bar_chart, line_chart, table_data
+
+
+if __name__ == "__main__":
+    app.run(debug=True, port=8056, jupyter_mode="external")
